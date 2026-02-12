@@ -1,0 +1,36 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "40d4db7f1b3d86714c8d4e7552cab223"
+name = "notify-me-in-stock"
+application_url = "https://example.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "inventory_levels/update" ]
+  uri = "/webhooks/inventory_levels/update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,read_products,read_metaobjects,write_metaobjects,write_marketing_events"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]
+
+[app_proxy]
+url = "https://current-amendments-shoulder-reader.trycloudflare.com"
+subpath = "notify-me-in-stock"
+prefix = "apps"
