@@ -2,30 +2,18 @@ import { authenticate } from "../shopify.server";
 
 /**
  * 🔐 Fetch CleverTap credentials for THIS store (multi-store safe)
- * Required metafields:
- * namespace: clevertap
- * keys: account_id, passcode, region (eg: in1, us1, eu1)
  */
 async function getCleverTapConfig(admin) {
   const res = await admin.graphql(`
     query {
       shop {
-        accountId: metafield(
-          namespace: "clevertap"
-          key: "account_id"
-        ) {
+        accountId: metafield(namespace: "clevertap", key: "account_id") {
           value
         }
-        passcode: metafield(
-          namespace: "clevertap"
-          key: "passcode"
-        ) {
+        passcode: metafield(namespace: "clevertap", key: "passcode") {
           value
         }
-        region: metafield(
-          namespace: "clevertap"
-          key: "region"
-        ) {
+        region: metafield(namespace: "clevertap", key: "region") {
           value
         }
       }
@@ -98,13 +86,14 @@ async function sendCleverTapBackInStockEvent({
  */
 export const action = async ({ request }) => {
   try {
-    const { payload, session, admin } =
+    // ✅ Correct production-safe webhook authentication
+    const { payload, admin, shop } =
       await authenticate.webhook(request);
 
     const { inventory_item_id, available } = payload;
 
     console.log("📦 INVENTORY WEBHOOK HIT", {
-      shop: session.shop,
+      shop,
       inventory_item_id,
       available,
     });
@@ -231,7 +220,7 @@ export const action = async ({ request }) => {
         productId,
         variantId,
         productTitle: variant.product.title,
-        productUrl: `https://${session.shop}/products/${variant.product.handle}`,
+        productUrl: `https://${shop}/products/${variant.product.handle}`,
       });
 
       await admin.graphql(
