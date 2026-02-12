@@ -2,7 +2,7 @@
 
 client_id = "40d4db7f1b3d86714c8d4e7552cab223"
 name = "notify-me-in-stock"
-application_url = "https://example.com"
+application_url = "https://back-in-stock-d0ts.onrender.com"
 embedded = true
 
 [build]
@@ -28,9 +28,10 @@ api_version = "2026-04"
 scopes = "read_inventory,read_products,read_metaobjects,write_metaobjects,write_marketing_events"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://back-in-stock-d0ts.onrender.com/api/auth" ]
 
 [app_proxy]
-url = "https://current-amendments-shoulder-reader.trycloudflare.com"
+url = "https://back-in-stock-d0ts.onrender.com"
 subpath = "notify-me-in-stock"
 prefix = "apps"
+

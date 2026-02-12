@@ -62,9 +62,6 @@
   "workspaces": [
     "extensions/*"
   ],
-  "trustedDependencies": [
-    "@shopify/plugin-cloudflare"
-  ],
   "overrides": {
     "p-map": "^4.0.0"
   },
