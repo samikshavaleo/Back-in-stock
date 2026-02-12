@@ -1,26 +1,28 @@
-import { authenticate } from "../shopify.server";
+import { authenticate, shopify } from "../shopify.server";
 
 /**
- * 🔐 Fetch CleverTap credentials for THIS store (multi-store safe)
+ * 🔐 Fetch CleverTap credentials for THIS store
  */
 async function getCleverTapConfig(admin) {
-  const res = await admin.graphql(`
-    query {
-      shop {
-        accountId: metafield(namespace: "clevertap", key: "account_id") {
-          value
-        }
-        passcode: metafield(namespace: "clevertap", key: "passcode") {
-          value
-        }
-        region: metafield(namespace: "clevertap", key: "region") {
-          value
+  const res = await admin.query({
+    data: `
+      query {
+        shop {
+          accountId: metafield(namespace: "clevertap", key: "account_id") {
+            value
+          }
+          passcode: metafield(namespace: "clevertap", key: "passcode") {
+            value
+          }
+          region: metafield(namespace: "clevertap", key: "region") {
+            value
+          }
         }
       }
-    }
-  `);
+    `,
+  });
 
-  const json = await res.json();
+  const json = res.body;
 
   return {
     accountId: json?.data?.shop?.accountId?.value,
@@ -86,53 +88,60 @@ async function sendCleverTapBackInStockEvent({
  */
 export const action = async ({ request }) => {
   try {
-    // ✅ Correct production-safe webhook authentication
-    const { payload, admin, shop } =
-      await authenticate.webhook(request);
-
-    const { inventory_item_id, available } = payload;
+    // 1️⃣ Authenticate webhook
+    const { payload, shop } = await authenticate.webhook(request);
 
     console.log("📦 INVENTORY WEBHOOK HIT", {
       shop,
-      inventory_item_id,
-      available,
+      inventory_item_id: payload.inventory_item_id,
+      available: payload.available,
     });
 
-    /**
-     * 1️⃣ Exit early if still out of stock
-     */
-    if (!available || available <= 0) {
+    if (!payload.available || payload.available <= 0) {
       console.log("⏭️ Inventory still out of stock");
       return new Response("OK", { status: 200 });
     }
 
     console.log("✅ Stock is now available");
 
-    /**
-     * 2️⃣ Resolve Variant from Inventory Item
-     */
-    const inventoryItemGid = `gid://shopify/InventoryItem/${inventory_item_id}`;
-
-    const variantRes = await admin.graphql(
-      `
-      query getInventoryItem($id: ID!) {
-        inventoryItem(id: $id) {
-          variant {
-            id
-            product {
-              id
-              title
-              handle
-            }
-          }
-        }
-      }
-      `,
-      { variables: { id: inventoryItemGid } }
+    // 2️⃣ Load stored session from Prisma
+    const session = await shopify.sessionStorage.loadSession(
+      `offline_${shop}`
     );
 
-    const variantJson = await variantRes.json();
-    const variant = variantJson?.data?.inventoryItem?.variant;
+    if (!session) {
+      console.log("❌ No offline session found for shop:", shop);
+      return new Response("No session", { status: 200 });
+    }
+
+    // 3️⃣ Create GraphQL admin client manually
+    const admin = new shopify.api.clients.Graphql({ session });
+
+    // 4️⃣ Resolve variant from inventory item
+    const inventoryItemGid = `gid://shopify/InventoryItem/${payload.inventory_item_id}`;
+
+    const variantRes = await admin.query({
+      data: {
+        query: `
+          query getInventoryItem($id: ID!) {
+            inventoryItem(id: $id) {
+              variant {
+                id
+                product {
+                  id
+                  title
+                  handle
+                }
+              }
+            }
+          }
+        `,
+        variables: { id: inventoryItemGid },
+      },
+    });
+
+    const variant =
+      variantRes.body?.data?.inventoryItem?.variant;
 
     if (!variant) {
       console.log("❌ Variant not found");
@@ -147,44 +156,35 @@ export const action = async ({ request }) => {
       productTitle: variant.product.title,
     });
 
-    /**
-     * 3️⃣ Fetch CleverTap credentials for this store
-     */
+    // 5️⃣ Fetch CleverTap credentials
     const { accountId, passcode, region } =
       await getCleverTapConfig(admin);
 
     if (!accountId || !passcode || !region) {
-      console.log("⚠️ CleverTap not configured for this store");
+      console.log("⚠️ CleverTap not configured");
       return new Response("OK", { status: 200 });
     }
 
-    /**
-     * 4️⃣ Fetch all back_in_stock_request metaobjects
-     */
-    const notifyRes = await admin.graphql(`
-      query {
-        metaobjects(type: "back_in_stock_request", first: 100) {
-          nodes {
-            id
-            fields {
-              key
-              value
+    // 6️⃣ Fetch back_in_stock_request metaobjects
+    const notifyRes = await admin.query({
+      data: `
+        query {
+          metaobjects(type: "back_in_stock_request", first: 100) {
+            nodes {
+              id
+              fields {
+                key
+                value
+              }
             }
           }
         }
-      }
-    `);
+      `,
+    });
 
-    const notifyJson = await notifyRes.json();
-    const allRequests = notifyJson?.data?.metaobjects?.nodes || [];
+    const allRequests =
+      notifyRes.body?.data?.metaobjects?.nodes || [];
 
-    console.log(
-      `🧪 Total back_in_stock_request fetched: ${allRequests.length}`
-    );
-
-    /**
-     * 5️⃣ Filter pending requests for this variant
-     */
     const matchingRequests = allRequests.filter((req) => {
       const fields = Object.fromEntries(
         req.fields.map((f) => [f.key, f.value])
@@ -204,9 +204,7 @@ export const action = async ({ request }) => {
       return new Response("OK", { status: 200 });
     }
 
-    /**
-     * 6️⃣ Send CleverTap events & mark notified
-     */
+    // 7️⃣ Send CleverTap event & mark notified
     for (const req of matchingRequests) {
       const fields = Object.fromEntries(
         req.fields.map((f) => [f.key, f.value])
@@ -223,21 +221,23 @@ export const action = async ({ request }) => {
         productUrl: `https://${shop}/products/${variant.product.handle}`,
       });
 
-      await admin.graphql(
-        `
-        mutation markNotified($id: ID!) {
-          metaobjectUpdate(
-            id: $id,
-            metaobject: {
-              fields: [{ key: "status", value: "notified" }]
+      await admin.query({
+        data: {
+          query: `
+            mutation markNotified($id: ID!) {
+              metaobjectUpdate(
+                id: $id,
+                metaobject: {
+                  fields: [{ key: "status", value: "notified" }]
+                }
+              ) {
+                metaobject { id }
+              }
             }
-          ) {
-            metaobject { id }
-          }
-        }
-        `,
-        { variables: { id: req.id } }
-      );
+          `,
+          variables: { id: req.id },
+        },
+      });
     }
 
     console.log("✅ All notifications processed");
