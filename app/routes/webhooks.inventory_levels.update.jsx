@@ -4,25 +4,23 @@ import { authenticate } from "../shopify.server";
  * 🔐 Fetch CleverTap credentials for THIS store
  */
 async function getCleverTapConfig(admin) {
-  const res = await admin.query({
-    data: `
-      query {
-        shop {
-          accountId: metafield(namespace: "clevertap", key: "account_id") {
-            value
-          }
-          passcode: metafield(namespace: "clevertap", key: "passcode") {
-            value
-          }
-          region: metafield(namespace: "clevertap", key: "region") {
-            value
-          }
+  const res = await admin.graphql(`
+    query {
+      shop {
+        accountId: metafield(namespace: "clevertap", key: "account_id") {
+          value
+        }
+        passcode: metafield(namespace: "clevertap", key: "passcode") {
+          value
+        }
+        region: metafield(namespace: "clevertap", key: "region") {
+          value
         }
       }
-    `,
-  });
+    }
+  `);
 
-  const json = res.body;
+  const json = await res.json();
 
   return {
     accountId: json?.data?.shop?.accountId?.value,
@@ -88,11 +86,12 @@ async function sendCleverTapBackInStockEvent({
  */
 export const action = async ({ request }) => {
   try {
-    // 1️⃣ Authenticate webhook
-    const { payload, shop } = await authenticate.webhook(request);
+    // ✅ THIS gives you admin automatically (no manual session loading)
+    const { payload, session, admin } =
+      await authenticate.webhook(request);
 
     console.log("📦 INVENTORY WEBHOOK HIT", {
-      shop,
+      shop: session.shop,
       inventory_item_id: payload.inventory_item_id,
       available: payload.available,
     });
@@ -104,44 +103,31 @@ export const action = async ({ request }) => {
 
     console.log("✅ Stock is now available");
 
-    // 2️⃣ Load stored session from Prisma
-    const session = await shopify.sessionStorage.loadSession(
-      `offline_${shop}`
-    );
-
-    if (!session) {
-      console.log("❌ No offline session found for shop:", shop);
-      return new Response("No session", { status: 200 });
-    }
-
-    // 3️⃣ Create GraphQL admin client manually
-    const admin = new shopify.api.clients.Graphql({ session });
-
-    // 4️⃣ Resolve variant from inventory item
+    /**
+     * 1️⃣ Resolve Variant from Inventory Item
+     */
     const inventoryItemGid = `gid://shopify/InventoryItem/${payload.inventory_item_id}`;
 
-    const variantRes = await admin.query({
-      data: {
-        query: `
-          query getInventoryItem($id: ID!) {
-            inventoryItem(id: $id) {
-              variant {
-                id
-                product {
-                  id
-                  title
-                  handle
-                }
-              }
+    const variantRes = await admin.graphql(
+      `
+      query getInventoryItem($id: ID!) {
+        inventoryItem(id: $id) {
+          variant {
+            id
+            product {
+              id
+              title
+              handle
             }
           }
-        `,
-        variables: { id: inventoryItemGid },
-      },
-    });
+        }
+      }
+      `,
+      { variables: { id: inventoryItemGid } }
+    );
 
-    const variant =
-      variantRes.body?.data?.inventoryItem?.variant;
+    const variantJson = await variantRes.json();
+    const variant = variantJson?.data?.inventoryItem?.variant;
 
     if (!variant) {
       console.log("❌ Variant not found");
@@ -156,7 +142,9 @@ export const action = async ({ request }) => {
       productTitle: variant.product.title,
     });
 
-    // 5️⃣ Fetch CleverTap credentials
+    /**
+     * 2️⃣ Fetch CleverTap credentials
+     */
     const { accountId, passcode, region } =
       await getCleverTapConfig(admin);
 
@@ -165,25 +153,26 @@ export const action = async ({ request }) => {
       return new Response("OK", { status: 200 });
     }
 
-    // 6️⃣ Fetch back_in_stock_request metaobjects
-    const notifyRes = await admin.query({
-      data: `
-        query {
-          metaobjects(type: "back_in_stock_request", first: 100) {
-            nodes {
-              id
-              fields {
-                key
-                value
-              }
+    /**
+     * 3️⃣ Fetch pending back_in_stock_request metaobjects
+     */
+    const notifyRes = await admin.graphql(`
+      query {
+        metaobjects(type: "back_in_stock_request", first: 100) {
+          nodes {
+            id
+            fields {
+              key
+              value
             }
           }
         }
-      `,
-    });
+      }
+    `);
 
+    const notifyJson = await notifyRes.json();
     const allRequests =
-      notifyRes.body?.data?.metaobjects?.nodes || [];
+      notifyJson?.data?.metaobjects?.nodes || [];
 
     const matchingRequests = allRequests.filter((req) => {
       const fields = Object.fromEntries(
@@ -204,7 +193,9 @@ export const action = async ({ request }) => {
       return new Response("OK", { status: 200 });
     }
 
-    // 7️⃣ Send CleverTap event & mark notified
+    /**
+     * 4️⃣ Send CleverTap events & mark notified
+     */
     for (const req of matchingRequests) {
       const fields = Object.fromEntries(
         req.fields.map((f) => [f.key, f.value])
@@ -218,26 +209,24 @@ export const action = async ({ request }) => {
         productId,
         variantId,
         productTitle: variant.product.title,
-        productUrl: `https://${shop}/products/${variant.product.handle}`,
+        productUrl: `https://${session.shop}/products/${variant.product.handle}`,
       });
 
-      await admin.query({
-        data: {
-          query: `
-            mutation markNotified($id: ID!) {
-              metaobjectUpdate(
-                id: $id,
-                metaobject: {
-                  fields: [{ key: "status", value: "notified" }]
-                }
-              ) {
-                metaobject { id }
-              }
+      await admin.graphql(
+        `
+        mutation markNotified($id: ID!) {
+          metaobjectUpdate(
+            id: $id,
+            metaobject: {
+              fields: [{ key: "status", value: "notified" }]
             }
-          `,
-          variables: { id: req.id },
-        },
-      });
+          ) {
+            metaobject { id }
+          }
+        }
+        `,
+        { variables: { id: req.id } }
+      );
     }
 
     console.log("✅ All notifications processed");
