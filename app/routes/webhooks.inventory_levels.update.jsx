@@ -1,4 +1,4 @@
-import { authenticate, shopify } from "../shopify.server";
+import { authenticate } from "../shopify.server";
 
 /**
  * 🔐 Fetch CleverTap credentials for THIS store
