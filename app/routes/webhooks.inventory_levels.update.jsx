@@ -41,6 +41,7 @@ async function sendCleverTapBackInStockEvent({
   variantId,
   productTitle,
   productUrl,
+  imageUrl,
 }) {
   const payload = {
     d: [
@@ -53,6 +54,7 @@ async function sendCleverTapBackInStockEvent({
           variant_id: variantId,
           product_title: productTitle,
           product_url: productUrl,
+          product_image: imageUrl,
         },
         profileData: {
           Email: email,
@@ -86,7 +88,6 @@ async function sendCleverTapBackInStockEvent({
  */
 export const action = async ({ request }) => {
   try {
-    // ✅ THIS gives you admin automatically (no manual session loading)
     const { payload, session, admin } =
       await authenticate.webhook(request);
 
@@ -114,10 +115,16 @@ export const action = async ({ request }) => {
         inventoryItem(id: $id) {
           variant {
             id
+            image {
+              url
+            }
             product {
               id
               title
               handle
+              featuredImage {
+                url
+              }
             }
           }
         }
@@ -137,9 +144,16 @@ export const action = async ({ request }) => {
     const variantId = variant.id.split("/").pop();
     const productId = variant.product.id.split("/").pop();
 
+    // 🔥 Safe image fallback
+    const imageUrl =
+      variant.image?.url ||
+      variant.product.featuredImage?.url ||
+      null;
+
     console.log("🎯 VARIANT RESOLVED", {
       variantId,
       productTitle: variant.product.title,
+      imageUrl,
     });
 
     /**
@@ -210,6 +224,7 @@ export const action = async ({ request }) => {
         variantId,
         productTitle: variant.product.title,
         productUrl: `https://${session.shop}/products/${variant.product.handle}`,
+        imageUrl,
       });
 
       await admin.graphql(
